@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+#
+# PutServerInit <ProfileName>
+#
+# Palworld-Server-Settings.tsv の指定プロファイル列(Brown/Drop/Oillig/Power/Origin)から
+# PalWorldSettings.ini を生成し、サーバーに配置後、palserver を再起動する。
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TSV_FILE="${SCRIPT_DIR}/Palworld-Server-Settings.tsv"
+DEST_INI="/home/ubuntu/Steam/steamapps/common/PalServer/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini"
+SERVICE_NAME="palserver"
+STATE_FILE="${SCRIPT_DIR}/.current_profile"
+LOG_DIR="${SCRIPT_DIR}/log"
+LOG_FILE="${LOG_DIR}/PutServerInit.log"
+
+mkdir -p "$LOG_DIR"
+
+# 実行ログをファイルにも残す (標準出力・標準エラーはそのまま呼び出し元にも出る)
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "===== $(date '+%Y-%m-%d %H:%M:%S') PutServerInit start (args: $*) ====="
+
+usage() {
+    echo "使い方: $(basename "$0") <ProfileName>" >&2
+    echo "  ProfileName: TSVのヘッダー行にある列名 (例: Brown, Drop, Oillig, Power, Origin)" >&2
+    exit 1
+}
+
+if [[ $# -ne 1 ]]; then
+    usage
+fi
+PROFILE="$1"
+
+if [[ ! -f "$TSV_FILE" ]]; then
+    echo "[ERROR] TSVファイルが見つかりません: $TSV_FILE" >&2
+    exit 1
+fi
+
+# ヘッダー行からプロファイル列の番号を特定する
+COL_INDEX="$(awk -F'\t' -v profile="$PROFILE" '
+    NR == 1 {
+        for (i = 1; i <= NF; i++) {
+            if ($i == profile) {
+                print i
+                exit
+            }
+        }
+    }
+' "$TSV_FILE")"
+
+if [[ -z "$COL_INDEX" ]]; then
+    echo "[ERROR] プロファイル '$PROFILE' はTSVのヘッダーに見つかりません。" >&2
+    usage
+fi
+
+# key<TAB>value の一覧を取り出す (キー列=2列目, 値列=COL_INDEX)
+KV_LIST="$(awk -F'\t' -v col="$COL_INDEX" '
+    NR == 1 { next }
+    {
+        key = $2
+        val = $col
+        if (key == "" ) next
+        print key "\t" val
+    }
+' "$TSV_FILE")"
+
+if [[ -z "$KV_LIST" ]]; then
+    echo "[ERROR] プロファイル '$PROFILE' の設定値が取得できませんでした。" >&2
+    exit 1
+fi
+
+# 全角数字 -> 半角数字 に変換するヘルパー (差分があれば警告を出す)
+to_halfwidth() {
+    printf '%s' "$1" | perl -CSD -pe 'tr/\x{FF10}-\x{FF19}/0-9/'
+}
+
+OPTION_PAIRS=()
+while IFS=$'\t' read -r key val; do
+    converted="$(to_halfwidth "$val")"
+    if [[ "$converted" != "$val" ]]; then
+        echo "[WARN] ${key}: 全角文字を検出したため半角に変換しました: '${val}' -> '${converted}'" >&2
+        val="$converted"
+    fi
+    OPTION_PAIRS+=("${key}=${val}")
+done <<< "$KV_LIST"
+
+OPTION_SETTINGS="$(IFS=,; echo "${OPTION_PAIRS[*]}")"
+
+TMP_FILE="$(mktemp)"
+trap 'rm -f "$TMP_FILE"' EXIT
+
+{
+    echo "[/Script/Pal.PalGameWorldSettings]"
+    echo "OptionSettings=(${OPTION_SETTINGS})"
+} > "$TMP_FILE"
+
+echo "[INFO] 生成したiniを配置します: $DEST_INI"
+sudo install -m 644 "$TMP_FILE" "$DEST_INI"
+
+echo "[INFO] ${SERVICE_NAME} を再起動します..."
+sudo systemctl restart "$SERVICE_NAME"
+
+echo "${PROFILE}" > "$STATE_FILE"
+echo "[INFO] 完了しました (プロファイル: ${PROFILE})"

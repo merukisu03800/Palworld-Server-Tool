@@ -1,0 +1,14 @@
+[Unit]
+Description=Palworld Guest Join Watcher
+After=palserver.service
+Requires=palserver.service
+
+[Service]
+Type=simple
+User=ubuntu
+ExecStart=/home/ubuntu/SettingTool/watch-new-player.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

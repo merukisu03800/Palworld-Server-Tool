@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>EC2 Controller</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 0 20px;
+        }
+        .button-container {
+            display: flex;
+            gap: 10px;
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        #status {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            min-height: 100px;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+        #connection-info {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #f0f0f0;
+            border-left: 4px solid #4CAF50;
+            font-family: monospace;
+            font-size: 16px;
+        }
+        .error {
+            color: red;
+        }
+        .profile-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin: 20px 0;
+        }
+        .profile-container button {
+            background-color: #eef;
+        }
+        .profile-container button.active {
+            background-color: #4CAF50;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <h1>EC2 Controller</h1>
+    <div class="button-container">
+        <button onclick="controlEC2('start')">サーバ起動</button>
+        <button onclick="controlEC2('stop')">サーバ停止</button>
+        <button onclick="controlEC2('status')">起動/停止確認</button>
+        <button onclick="dispatchAction('restart-server', 'palserverを再起動中...')">プロセス再起動のみ</button>
+    </div>
+
+    <h2>サーバー設定プロファイル適用</h2>
+    <div class="profile-container">
+        <button onclick="applyProfile('Brown')">Brown</button>
+        <button onclick="applyProfile('Drop')">Drop</button>
+        <button onclick="applyProfile('Oillig')">Oillig</button>
+        <button onclick="applyProfile('Power')">Power</button>
+        <button onclick="applyProfile('Origin')">Origin</button>
+    </div>
+
+    <div id="status">
+        Response will appear here...
+    </div>
+    <div id="connection-info"></div>
+
+    <script>
+        const API_URL = 'xx'; // 実際のAPI Gateway URLに置き換えてください (このURLは認証なしで公開されるため、.gitignore対象のec2-controller-ui-admin.htmlに実URLを記載すること)
+        const PORT = '8211'; // 接続ポートを定義
+
+        async function callApi(payload) {
+            const response = await fetch(API_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                mode: 'cors',
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                let detail = '';
+                try {
+                    detail = JSON.stringify(await response.json());
+                } catch (e) {
+                    // ignore
+                }
+                throw new Error(`HTTP error! status: ${response.status} ${detail}`);
+            }
+
+            return response.json();
+        }
+
+        async function controlEC2(action) {
+            const statusDiv = document.getElementById('status');
+            const connectionDiv = document.getElementById('connection-info');
+            statusDiv.innerHTML = 'Loading...';
+            statusDiv.className = '';
+            connectionDiv.innerHTML = '';
+
+            try {
+                const data = await callApi({ action: action });
+                statusDiv.innerHTML = JSON.stringify(data, null, 2);
+
+                // パブリックIPが存在する場合は接続情報を表示
+                if (data.public_ip) {
+                    connectionDiv.innerHTML = `接続先：${data.public_ip}:${PORT}`;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `Error: ${error.message}\n\nPossible causes:\n1. CORS is not enabled in API Gateway\n2. API URL is incorrect\n3. API Gateway is not deployed\n4. Network issue`;
+                statusDiv.className = 'error';
+                connectionDiv.innerHTML = '';
+                console.error('Error details:', error);
+            }
+        }
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        const TERMINAL_STATUSES = ['Success', 'Failed', 'Cancelled', 'TimedOut'];
+
+        async function pollProfileStatus(commandId, statusDiv, maxAttempts = 30, intervalMs = 2000) {
+            for (let i = 0; i < maxAttempts; i++) {
+                await sleep(intervalMs);
+                const data = await callApi({ action: 'profile-status', command_id: commandId });
+                statusDiv.innerHTML = JSON.stringify(data, null, 2);
+
+                if (TERMINAL_STATUSES.includes(data.status)) {
+                    statusDiv.className = data.status === 'Success' ? '' : 'error';
+                    return;
+                }
+            }
+            statusDiv.innerHTML += '\n\n(タイムアウト: 状態確認を打ち切りました。実際には完了している場合があります)';
+            statusDiv.className = 'error';
+        }
+
+        async function dispatchAction(action, loadingMessage, extraPayload = {}) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerHTML = `${loadingMessage} (数秒〜数十秒かかります)`;
+            statusDiv.className = '';
+
+            try {
+                const data = await callApi({ action: action, ...extraPayload });
+
+                if (!data.command_id) {
+                    statusDiv.innerHTML = JSON.stringify(data, null, 2);
+                    statusDiv.className = 'error';
+                    return;
+                }
+
+                statusDiv.innerHTML = JSON.stringify(data, null, 2);
+                await pollProfileStatus(data.command_id, statusDiv);
+            } catch (error) {
+                statusDiv.innerHTML = `Error: ${error.message}`;
+                statusDiv.className = 'error';
+                console.error('Error details:', error);
+            }
+        }
+
+        async function applyProfile(profile) {
+            document.querySelectorAll('.profile-container button').forEach(btn => {
+                btn.classList.toggle('active', btn.textContent === profile);
+            });
+            await dispatchAction('apply-profile', `Applying profile "${profile}"...`, { profile: profile });
+        }
+    </script>
+</body>
+</html>

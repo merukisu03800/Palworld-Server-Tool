@@ -1,0 +1,12 @@
+# 機密情報を含む実ファイル（ローカル専用。*.example.* をコピーして使う）
+Palworld-Server-Settings.tsv
+ec2-controller-ui-admin.html
+
+# Lambdaデプロイ用の一時生成物
+lambda/**/*.zip
+lambda/**/__pycache__/
+**/__pycache__/
+*.pyc
+
+# OS/エディタ生成物
+.DS_Store
